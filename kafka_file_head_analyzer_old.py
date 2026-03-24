@@ -317,6 +317,75 @@ class ResetToBeginningListener(ConsumerRebalanceListener):
 
 
 # ---------------------------
+# Magic-byte fallback detection
+# ---------------------------
+_ZIP_SIGNATURE = b"PK\x03\x04"
+
+_MAGIC_SIGNATURES: List[tuple[bytes, str]] = [
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"%PDF", "application/pdf"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "application/x-ole-storage"),
+]
+
+_OPENXML_TYPE_MAP: Dict[str, str] = {
+    "word/": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "ppt/": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "xl/": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
+def _parse_zip_filenames(data: bytes, max_entries: int = 20) -> List[str]:
+    """Extract filenames from ZIP local file headers in a byte buffer."""
+    filenames: List[str] = []
+    offset = 0
+    for _ in range(max_entries):
+        if offset + 30 > len(data) or data[offset : offset + 4] != _ZIP_SIGNATURE:
+            break
+        fname_len = int.from_bytes(data[offset + 26 : offset + 28], "little")
+        extra_len = int.from_bytes(data[offset + 28 : offset + 30], "little")
+        comp_size = int.from_bytes(data[offset + 18 : offset + 22], "little")
+        flags = int.from_bytes(data[offset + 6 : offset + 8], "little")
+        fname_end = offset + 30 + fname_len
+        if fname_end > len(data):
+            break
+        filenames.append(
+            data[offset + 30 : fname_end].decode("utf-8", errors="replace")
+        )
+        if flags & 0x08:  # data descriptor present — can't reliably find next entry
+            break
+        next_offset = fname_end + extra_len + comp_size
+        if next_offset <= offset:
+            break
+        offset = next_offset
+    return filenames
+
+
+def _detect_zip_subtype(data: bytes) -> str:
+    """Determine specific MIME type for a ZIP-based file (OpenXML, JAR, etc.)."""
+    filenames = _parse_zip_filenames(data)
+    for fname in filenames:
+        for prefix, mime in _OPENXML_TYPE_MAP.items():
+            if fname.startswith(prefix):
+                return mime
+    return "application/zip"
+
+
+def fallback_detect_mime(data: bytes) -> Optional[str]:
+    """Try to detect MIME type from raw magic bytes when libmagic fails."""
+    if len(data) < 4:
+        return None
+    if data[:4] == _ZIP_SIGNATURE:
+        return _detect_zip_subtype(data)
+    for sig, mime in _MAGIC_SIGNATURES:
+        if data[: len(sig)] == sig:
+            return mime
+    return None
+
+
+# ---------------------------
 # HTTP HEAD + binary probe
 # ---------------------------
 PROBE_HEX_BYTES = int(os.getenv("PROBE_HEX_BYTES", "32"))
@@ -329,8 +398,10 @@ async def probe_binary_type(
 ) -> tuple[Optional[str], Optional[int], Optional[str], Optional[str]]:
     """Download the first PROBE_BYTES of *url* and detect MIME via libmagic.
 
+    Falls back to magic-byte signature detection when libmagic returns a
+    generic type (application/octet-stream).
+
     Returns (binary_content_type, http_status, error_string, head_hex).
-    Handles servers that ignore Range headers by streaming only the needed bytes.
     """
     async with semaphore:
         try:
@@ -347,6 +418,10 @@ async def probe_binary_type(
                     if not data:
                         return None, status, None, None
                     detected = magic.from_buffer(data, mime=True)
+                    if not detected or detected in MIME_UNDETECTABLE:
+                        fallback = fallback_detect_mime(data)
+                        if fallback:
+                            detected = fallback
                     head_hex = data[:PROBE_HEX_BYTES].hex(" ")
                     return (detected if detected else None), status, None, head_hex
                 return None, status, f"unexpected_status_{status}", None
