@@ -223,6 +223,7 @@ class FileHeadResult:
     binary_content_type: Optional[str] = None
     probe_status: Optional[int] = None
     probe_error: Optional[str] = None
+    probe_head_hex: Optional[str] = None
 
 
 @dataclass
@@ -287,6 +288,7 @@ class MaterialState:
                         "binary_content_type": entry.binary_content_type,
                         "probe_status": entry.probe_status,
                         "probe_error": entry.probe_error,
+                        "probe_head_hex": entry.probe_head_hex,
                     }
                 )
         return rows
@@ -317,14 +319,17 @@ class ResetToBeginningListener(ConsumerRebalanceListener):
 # ---------------------------
 # HTTP HEAD + binary probe
 # ---------------------------
+PROBE_HEX_BYTES = int(os.getenv("PROBE_HEX_BYTES", "32"))
+
+
 async def probe_binary_type(
     session: aiohttp.ClientSession,
     semaphore: asyncio.Semaphore,
     url: str,
-) -> tuple[Optional[str], Optional[int], Optional[str]]:
+) -> tuple[Optional[str], Optional[int], Optional[str], Optional[str]]:
     """Download the first PROBE_BYTES of *url* and detect MIME via libmagic.
 
-    Returns (binary_content_type, http_status, error_string).
+    Returns (binary_content_type, http_status, error_string, head_hex).
     Handles servers that ignore Range headers by streaming only the needed bytes.
     """
     async with semaphore:
@@ -340,12 +345,13 @@ async def probe_binary_type(
                 if status in (200, 206):
                     data = await resp.content.read(PROBE_BYTES)
                     if not data:
-                        return None, status, None
+                        return None, status, None, None
                     detected = magic.from_buffer(data, mime=True)
-                    return (detected if detected else None), status, None
-                return None, status, f"unexpected_status_{status}"
+                    head_hex = data[:PROBE_HEX_BYTES].hex(" ")
+                    return (detected if detected else None), status, None, head_hex
+                return None, status, f"unexpected_status_{status}", None
         except Exception as exc:
-            return None, None, str(exc)
+            return None, None, str(exc), None
 
 
 async def head_url(
@@ -379,7 +385,7 @@ async def head_url(
     size_bytes = parse_content_length(headers)
 
     # Binary probe — run on the final URL (after potential redirects)
-    binary_ct, probe_st, probe_err = await probe_binary_type(
+    binary_ct, probe_st, probe_err, head_hex = await probe_binary_type(
         session, semaphore, final_url
     )
 
@@ -399,6 +405,7 @@ async def head_url(
         binary_content_type=binary_ct,
         probe_status=probe_st,
         probe_error=probe_err,
+        probe_head_hex=head_hex,
     )
 
 
@@ -451,6 +458,7 @@ def build_empty_frame() -> pd.DataFrame:
             "binary_content_type",
             "probe_status",
             "probe_error",
+            "probe_head_hex",
         ]
     )
 
@@ -704,15 +712,51 @@ def build_mismatch_pairs(df: pd.DataFrame) -> pd.DataFrame:
     return pairs
 
 
+def build_undetectable_report(df: pd.DataFrame) -> pd.DataFrame:
+    """Return rows for files whose binary probe could not determine a real MIME type."""
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "material_id",
+                "file_url",
+                "extension",
+                "content_type",
+                "binary_content_type",
+                "size_bytes",
+                "probe_status",
+                "probe_error",
+                "probe_head_hex",
+                "status",
+            ]
+        )
+
+    mask = ~df["mime_detectable"]
+    cols = [
+        "material_id",
+        "file_url",
+        "extension",
+        "content_type",
+        "binary_content_type",
+        "size_bytes",
+        "probe_status",
+        "probe_error",
+        "probe_head_hex",
+        "status",
+    ]
+    return df.loc[mask, [c for c in cols if c in df.columns]].copy()
+
+
 def write_mime_verification_csvs(df: pd.DataFrame, output_dir: Path) -> Dict[str, Path]:
     paths = {
         "mime_inventory": output_dir / "mime_verification_inventory.csv",
         "mime_summary": output_dir / "mime_verification_summary.csv",
         "mime_mismatch_pairs": output_dir / "mime_mismatch_pairs.csv",
+        "mime_undetectable": output_dir / "mime_undetectable.csv",
     }
     build_mime_verification_inventory(df).to_csv(paths["mime_inventory"], index=False)
     build_mime_verification_summary(df).to_csv(paths["mime_summary"], index=False)
     build_mismatch_pairs(df).to_csv(paths["mime_mismatch_pairs"], index=False)
+    build_undetectable_report(df).to_csv(paths["mime_undetectable"], index=False)
     return paths
 
 
@@ -1130,6 +1174,7 @@ def render_reports(state: MaterialState, output_dir: Path) -> Dict[str, Any]:
         "csv_paths": csv_paths,
         "chart_paths": [p for p in chart_paths if p is not None],
         "overall": overall,
+        "undetectable_df": build_undetectable_report(df),
     }
 
 
@@ -1160,6 +1205,25 @@ def print_console_report(report: Dict[str, Any], counters: Counter) -> None:
     print(f"MIME undetectable        : {int(overall.get('mime_undetectable', 0))}")
     print(f"MIME probe errors        : {int(overall.get('mime_probe_errors', 0))}")
     print(f"MIME match rate          : {overall.get('mime_match_rate_pct', 0):.1f}%")
+    # Detail listing for undetectable files
+    undetectable_df = report.get("undetectable_df")
+    if undetectable_df is not None and not undetectable_df.empty:
+        print("-" * 100)
+        print(f"Undetectable files ({len(undetectable_df)}):")
+        for _, row in undetectable_df.iterrows():
+            ext = row.get("extension", "?")
+            ct = row.get("content_type") or "no Content-Type"
+            binary = row.get("binary_content_type") or "none"
+            err = row.get("probe_error") or ""
+            hexv = row.get("probe_head_hex") or ""
+            url = row.get("file_url", "")
+            size = format_bytes_human(row.get("size_bytes"))
+            reason = err if err else f"binary={binary}"
+            line = f"  .{ext:10s}  {size:>10s}  {ct:40s}  {reason}"
+            if hexv:
+                line += f"  hex=[{hexv}]"
+            print(line)
+            print(f"    {url}")
     print("=" * 100)
     print(f"CSV inventory            : {report['csv_paths']['inventory']}")
     print(f"CSV overall              : {report['csv_paths']['overall']}")
@@ -1175,6 +1239,9 @@ def print_console_report(report: Dict[str, Any], counters: Counter) -> None:
     )
     print(
         f"CSV MIME mismatch pairs  : {report['csv_paths'].get('mime_mismatch_pairs', 'N/A')}"
+    )
+    print(
+        f"CSV MIME undetectable    : {report['csv_paths'].get('mime_undetectable', 'N/A')}"
     )
     if report["chart_paths"]:
         print("Charts                   :")
