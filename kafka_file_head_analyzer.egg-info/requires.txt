@@ -1,0 +1,14 @@
+aiohttp<4.0,>=3.10
+aiokafka<1.0,>=0.11
+matplotlib<4.0,>=3.9
+numpy<3.0,>=2.1
+pandas<3.0,>=2.2
+
+[:sys_platform != "win32"]
+python-magic<1.0,>=0.4.27
+
+[:sys_platform == "win32"]
+python-magic-bin<1.0,>=0.4.14
+
+[dev]
+pandas-stubs<3.0,>=2.2

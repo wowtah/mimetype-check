@@ -1,0 +1,2 @@
+[console_scripts]
+kafka-file-head-analyzer = kafka_file_head_analyzer_old:main

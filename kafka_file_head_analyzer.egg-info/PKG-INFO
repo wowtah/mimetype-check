@@ -1,3 +1,19 @@
+Metadata-Version: 2.4
+Name: kafka-file-head-analyzer
+Version: 0.1.0
+Summary: Consume Kafka material events, probe file headers, and export size/content reports.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: aiohttp<4.0,>=3.10
+Requires-Dist: aiokafka<1.0,>=0.11
+Requires-Dist: matplotlib<4.0,>=3.9
+Requires-Dist: numpy<3.0,>=2.1
+Requires-Dist: pandas<3.0,>=2.2
+Requires-Dist: python-magic<1.0,>=0.4.27; sys_platform != "win32"
+Requires-Dist: python-magic-bin<1.0,>=0.4.14; sys_platform == "win32"
+Provides-Extra: dev
+Requires-Dist: pandas-stubs<3.0,>=2.2; extra == "dev"
+
 # Kafka File Head Analyzer
 
 This workspace contains a Kafka consumer that reads material events, performs HTTP `HEAD` requests on referenced files, and exports CSV summaries and charts.

@@ -1,0 +1,9 @@
+README.md
+kafka_file_head_analyzer_old.py
+pyproject.toml
+kafka_file_head_analyzer.egg-info/PKG-INFO
+kafka_file_head_analyzer.egg-info/SOURCES.txt
+kafka_file_head_analyzer.egg-info/dependency_links.txt
+kafka_file_head_analyzer.egg-info/entry_points.txt
+kafka_file_head_analyzer.egg-info/requires.txt
+kafka_file_head_analyzer.egg-info/top_level.txt

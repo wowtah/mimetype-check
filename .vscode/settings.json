@@ -1,0 +1,10 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+    "python.analysis.stubPath": "typings",
+    "python.analysis.extraPaths": [
+        "typings"
+    ],
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingTypeStubs": "none"
+    }
+}

@@ -1,0 +1,6 @@
+{
+    "venvPath": ".",
+    "venv": ".venv",
+    "stubPath": "typings",
+    "reportMissingTypeStubs": false
+}
